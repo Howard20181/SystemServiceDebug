@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">System Service Debug</string>
+    <string name="xposed_description">System Service Debug</string>
+</resources>
