@@ -2,13 +2,12 @@ package io.github.howard20181.systemservicedebug;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.pm.PackageManager;
 import android.content.pm.VersionedPackage;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 
-import java.util.Arrays;
+import java.util.List;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -25,18 +24,27 @@ public class DebugHook extends XposedModule {
         module = this;
     }
 
-    private static PackageManager pm = null;
-
     @Override
     public void onSystemServerLoaded(@NonNull SystemServerLoadedParam param) {
         var classLoader = param.getClassLoader();
         try {
-            hookRescuePartyPlusHelper(classLoader);
+//            hookRescuePartyPlusHelper(classLoader);
             hookOnHealthCheckFailed(classLoader);
             hookPackageWatchdogImpl(classLoader);
+//            hookPackageWatchdog(classLoader);
         } catch (Throwable tr) {
             log("Error hooking system service", tr);
         }
+    }
+
+    private void hookPackageWatchdog(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+        var aClass = classLoader.loadClass("com.android.server.PackageWatchdog$ObserverInternal");
+        var bClass = classLoader.loadClass("com.android.server.PackageWatchdog");
+        var innClass = classLoader.loadClass("com.android.server.PackageWatchdog$PackageHealthObserver");
+        var method = aClass.getDeclaredMethod("updatePackagesLocked", List.class);
+        var method2 = bClass.getDeclaredMethod("startObservingHealth", innClass, List.class, long.class);
+        hook(method, DumpStackHooker.class);
+        hook(method2, DumpStackHooker.class);
     }
 
     private void hookPackageWatchdogImpl(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
@@ -51,43 +59,13 @@ public class DebugHook extends XposedModule {
         var method = aClass.getDeclaredMethod("onHealthCheckFailed", VersionedPackage.class, int.class, int.class);
         var method2 = bClass.getDeclaredMethod("onHealthCheckFailed", VersionedPackage.class, int.class, int.class);
         hook(method, OnHealthCheckFailedHooker.class);
-        hook(method2, OnHealthCheckFailedHooker.class);
+//        hook(method2, DumpStackHooker.class);
     }
 
     private void hookRescuePartyPlusHelper(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
         var aClass = classLoader.loadClass("com.android.server.RescuePartyPlusHelper");
         var method = aClass.getDeclaredMethod("checkDisableRescuePartyPlus");
-        hook(method, CheckDisableRescuePartyPlusHooker.class);
-    }
-
-    private void hookMethods(Class<?> clazz, Class<? extends Hooker> hooker, String... names) {
-        var list = Arrays.asList(names);
-        Arrays.stream(clazz.getDeclaredMethods())
-                .filter(method -> list.contains(method.getName()))
-                .forEach(method -> hook(method, hooker));
-    }
-
-    private static PackageManager getPackageManager(@NonNull Context context) {
-        if (pm == null)
-            pm = context.getPackageManager();
-        return pm;
-    }
-
-    private static int getNormalizedUserId(int userId) {
-        if (userId == -1 /* UserHandle.USER_ALL */) {
-            userId = 0; /* UserHandle.USER_SYSTEM */
-        }
-        return userId;
-    }
-
-    @XposedHooker
-    private static class CheckDisableRescuePartyPlusHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            var here = new RuntimeException("checkDisableRescuePartyPlus");
-            here.fillInStackTrace();
-            Log.d("RescuePartyPlusHelper", here.getMessage(), here);
-        }
+        hook(method, DumpStackHooker.class);
     }
 
     @XposedHooker
@@ -98,9 +76,20 @@ public class DebugHook extends XposedModule {
             var failedPackage = (VersionedPackage) args[0];
             var failureReason = (int) args[1];
             var mitigationCount = (int) args[2];
-            var here = new RuntimeException("onHealthCheckFailed");
+            var pClass = callback.getThisObject();
+            var className = pClass != null ? pClass.getClass().getSimpleName() : "RescueParty";
+            Log.d(className, "onHealthCheckFailed failedPackage=" + failedPackage + ", failureReason=" + failureReason + ", mitigationCount=" + mitigationCount + " return=" + callback.getResult());
+        }
+    }
+
+
+    @XposedHooker
+    private static class DumpStackHooker implements Hooker {
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) {
+            var here = new RuntimeException("here");
             here.fillInStackTrace();
-            Log.d("RescueParty", "onHealthCheckFailed failedPackage=" + failedPackage + ", failureReason=" + failureReason + ", mitigationCount=" + mitigationCount + " return=" + callback.getResult(), here);
+            Log.d("StackTrace", callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName(), here);
         }
     }
 
