@@ -1,14 +1,18 @@
 package io.github.howard20181.systemservicedebug;
 
 import android.annotation.SuppressLint;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.VersionedPackage;
-import android.os.Bundle;
+import android.service.autofill.FillResponse;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 
+import java.lang.reflect.Executable;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.Executor;
 
@@ -21,6 +25,7 @@ import io.github.libxposed.api.annotations.XposedHooker;
 @SuppressLint({"PrivateApi", "BlockedPrivateApi", "SoonBlockedPrivateApi"})
 public class DebugHook extends XposedModule {
     private static XposedModule module;
+    private static Method isCustomFillUi;
 
     public DebugHook(XposedInterface base, ModuleLoadedParam param) {
         super(base, param);
@@ -28,35 +33,78 @@ public class DebugHook extends XposedModule {
     }
 
     @Override
-    public void onPackageLoaded(@NonNull PackageLoadedParam param) {
-        var classLoader = param.getClassLoader();
-        var pn = param.getPackageName();
-        try {
-            log("Loaded package: " + pn);
-//            hookProviderSettings(classLoader);
-        } catch (Throwable tr) {
-            log("Error hooking system framework", tr);
-        }
-    }
-
-    @Override
     public void onSystemServerLoaded(@NonNull SystemServerLoadedParam param) {
         var classLoader = param.getClassLoader();
         try {
+            try {
+                var cMiuiAutofillServiceHelper = classLoader.loadClass("com.android.server.autofill.MiuiAutofillServiceHelper");
+                isCustomFillUi = cMiuiAutofillServiceHelper.getDeclaredMethod("isCustomFillUi", FillResponse.class);
+            } catch (ClassNotFoundException | NoSuchMethodException e) {
+                log("find isCustomFillUi", e);
+            }
 //            hookRescuePartyPlusHelper(classLoader);
-            hookOnHealthCheckFailed(classLoader);
-            hookPackageWatchdogImpl(classLoader);
-            hookPackageWatchdog(classLoader);
-            hookRescuePartyMonitorCallback(classLoader);
+//            hookOnHealthCheckFailed(classLoader);
+//            hookPackageWatchdogImpl(classLoader);
+//            hookPackageWatchdog(classLoader);
+//            hookRescuePartyMonitorCallback(classLoader);
+            try {
+                hookCredentialManagerServiceImpl(classLoader);
+            } catch (Exception e) {
+                log("hook CredentialManagerServiceImpl failed", e);
+            }
+            try {
+                hookCredentialManagerService(classLoader);
+            } catch (Exception e) {
+                log("hook CredentialManagerService failed", e);
+            }
+            try {
+                hookMiuiAutofillServiceHelper(classLoader);
+            } catch (Exception e) {
+                log("hook MiuiAutofillServiceHelper failed", e);
+            }
+            try {
+                hookMiuiAutofillServiceStubImpl(classLoader);
+            } catch (Exception e) {
+                log("hook MiuiAutofillServiceStubImpl failed", e);
+            }
         } catch (Throwable tr) {
             log("Error hooking system service", tr);
         }
     }
 
+    private void hookCredentialManagerServiceImpl(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+        var iClass = classLoader.loadClass("com.android.server.credentials.CredentialManagerServiceImpl");
+        var aClass = classLoader.loadClass("com.android.server.credentials.CredentialManagerService");
+        var bClass = classLoader.loadClass("android.credentials.CredentialProviderInfo");
+        var sConstructor = iClass.getDeclaredConstructor(aClass, Object.class, int.class, String.class);
+        var pConstructor = iClass.getDeclaredConstructor(aClass, Object.class, int.class, bClass);
+        hook(sConstructor, DumpStackHooker.class);
+        hook(pConstructor, DumpStackHooker.class);
+    }
+
+    private void hookCredentialManagerService(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+        var aClass = classLoader.loadClass("com.android.server.credentials.CredentialManagerService");
+        var bClass = classLoader.loadClass("com.android.server.credentials.CredentialManagerService$SettingsWrapper");
+        var method = aClass.getDeclaredMethod("updateProvidersWhenServiceRemoved", bClass, ComponentName.class, int.class);
+        hook(method, DumpStackHooker.class);
+    }
+
+    private void hookMiuiAutofillServiceStubImpl(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+        var aClass = classLoader.loadClass("com.android.server.autofill.MiuiAutofillServiceStubImpl");
+        var method = aClass.getDeclaredMethod("checkIsCoustomFillUiForAuthResponse", FillResponse.class);
+        hook(method, CheckIsCoustomFillUiForAuthResponseHooker.class);
+    }
+
+    private void hookMiuiAutofillServiceHelper(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+        var aClass = classLoader.loadClass("com.android.server.autofill.MiuiAutofillServiceHelper");
+        var method = aClass.getDeclaredMethod("checkIsMiuiConsume", String.class);
+        hook(method, ReturnTrueHooker.class);
+    }
+
     private void hookRescuePartyMonitorCallback(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
         var aClass = classLoader.loadClass("com.android.server.RescueParty$RescuePartyMonitorCallback");
         var method = aClass.getDeclaredMethod("onDeviceConfigAccess", String.class, String.class);
-        hook(method, DumpStackHooker.class);
+//        hook(method, DumpStackHooker.class);
         hook(method, OnDeviceConfigAccessHooker.class);
     }
 
@@ -117,8 +165,25 @@ public class DebugHook extends XposedModule {
         @BeforeInvocation
         public static void before(@NonNull BeforeHookCallback callback) {
             var here = new RuntimeException("here");
+            var args = callback.getArgs();
+            var sb = new StringBuilder(callback.getMember() instanceof Method ? callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName() : callback.getMember().getName());
+            if (args.length > 0) {
+                sb.append("(");
+                for (int i = 0; i < args.length; i++) {
+                    if (i > 0) {
+                        sb.append(", ");
+                    }
+                    var arg = args[i];
+                    if (arg == null) {
+                        sb.append("null");
+                    } else {
+                        sb.append(arg.getClass().getName()).append(" \"").append(arg).append("\"");
+                    }
+                }
+                sb.append(")");
+            }
             here.fillInStackTrace();
-            Log.d("StackTrace", callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName(), here);
+            module.log(sb.toString(), here);
         }
     }
 
@@ -144,6 +209,49 @@ public class DebugHook extends XposedModule {
             var namespace = (String) args[1];
             var className = callback.getMember().getDeclaringClass().getSimpleName();
             Log.d(className, callback.getMember().getName() + " callingPackage=" + callingPackage + ", namespace=" + namespace);
+        }
+    }
+
+    @XposedHooker
+    private static class ReturnTrueHooker implements Hooker {
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) {
+            var args = callback.getArgs();
+            var sb = new StringBuilder(callback.getMember() instanceof Method ? callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName() : callback.getMember().getName());
+            if (args.length > 0) {
+                sb.append("(");
+                for (int i = 0; i < args.length; i++) {
+                    if (i > 0) {
+                        sb.append(", ");
+                    }
+                    var arg = args[i];
+                    if (arg == null) {
+                        sb.append("null");
+                    } else {
+                        sb.append(arg.getClass().getName()).append(" \"").append(arg).append("\"");
+                    }
+                }
+                sb.append(")");
+            }
+            module.log("return true and skip for " + sb);
+            callback.returnAndSkip(true);
+        }
+    }
+
+    @XposedHooker
+    private static class CheckIsCoustomFillUiForAuthResponseHooker implements Hooker {
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) throws InvocationTargetException, IllegalAccessException {
+            var arg1 = callback.getArgs()[0];
+            var res = false;
+            if (arg1 instanceof FillResponse response) {
+                var ret = module.invokeOrigin(isCustomFillUi, callback.getThisObject(), response);
+                if (ret != null) {
+                    res = (boolean) ret;
+                }
+            }
+            module.log("checkIsCoustomFillUiForAuthResponse return " + res);
+            callback.returnAndSkip(res);
         }
     }
 }
