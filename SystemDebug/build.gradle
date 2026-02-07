@@ -7,7 +7,7 @@ android {
 
     defaultConfig {
         applicationId namespace
-        minSdkVersion 27
+        minSdkVersion 34
         targetSdkVersion 36
         versionCode rootProject.ext.commitCount
         versionName "1.1.0"
