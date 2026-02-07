@@ -8,6 +8,7 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.VersionedPackage;
 import android.credentials.CredentialManager;
+import android.os.Build;
 import android.service.autofill.FillResponse;
 import android.util.Log;
 import android.credentials.selection.IntentCreationResult;
@@ -44,12 +45,12 @@ public class DebugHook extends XposedModule {
     public void onSystemServerLoaded(@NonNull SystemServerLoadedParam param) {
         var classLoader = param.getClassLoader();
         try {
-            try {
-                var cMiuiAutofillServiceHelper = classLoader.loadClass("com.android.server.autofill.MiuiAutofillServiceHelper");
-                isCustomFillUi = cMiuiAutofillServiceHelper.getDeclaredMethod("isCustomFillUi", FillResponse.class);
-            } catch (ClassNotFoundException | NoSuchMethodException e) {
-                log("find isCustomFillUi", e);
-            }
+//            try {
+//                var cMiuiAutofillServiceHelper = classLoader.loadClass("com.android.server.autofill.MiuiAutofillServiceHelper");
+//                isCustomFillUi = cMiuiAutofillServiceHelper.getDeclaredMethod("isCustomFillUi", FillResponse.class);
+//            } catch (ClassNotFoundException | NoSuchMethodException e) {
+//                log("find isCustomFillUi", e);
+//            }
 //            hookRescuePartyPlusHelper(classLoader);
 //            hookOnHealthCheckFailed(classLoader);
 //            hookPackageWatchdogImpl(classLoader);
@@ -70,16 +71,16 @@ public class DebugHook extends XposedModule {
 //            } catch (Exception e) {
 //                log("hook CredentialManagerService failed", e);
 //            }
-            try {
-                hookMiuiAutofillServiceHelper(classLoader);
-            } catch (Exception e) {
-                log("hook MiuiAutofillServiceHelper failed", e);
-            }
-            try {
-                hookMiuiAutofillServiceStubImpl(classLoader);
-            } catch (Exception e) {
-                log("hook MiuiAutofillServiceStubImpl failed", e);
-            }
+//            try {
+//                hookMiuiAutofillServiceHelper(classLoader);
+//            } catch (Exception e) {
+//                log("hook MiuiAutofillServiceHelper failed", e);
+//            }
+//            try {
+//                hookMiuiAutofillServiceStubImpl(classLoader);
+//            } catch (Exception e) {
+//                log("hook MiuiAutofillServiceStubImpl failed", e);
+//            }
         } catch (Throwable tr) {
             log("Error hooking system service", tr);
         }
@@ -99,15 +100,17 @@ public class DebugHook extends XposedModule {
             log("find IS_INTERNATIONAL_BUILD failed", e);
         }
         if (pn.equals(settingsPackageName)) {
-            try {
-                hookDefaultCombinedPicker(classLoader);
-            } catch (Exception e) {
-                log("hook DefaultCombinedPicker failed", e);
-            }
-            try {
-                hookDefaultCombinedPreferenceController(classLoader);
-            } catch (Exception e) {
-                log("hook DefaultCombinedPreferenceController failed", e);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                try {
+                    hookDefaultCombinedPicker(classLoader);
+                } catch (Exception e) {
+                    log("hook DefaultCombinedPicker failed", e);
+                }
+                try {
+                    hookDefaultCombinedPreferenceController(classLoader);
+                } catch (Exception e) {
+                    log("hook DefaultCombinedPreferenceController failed", e);
+                }
             }
         }
     }
@@ -115,7 +118,7 @@ public class DebugHook extends XposedModule {
     @RequiresApi(34)
     private void hookDefaultCombinedPreferenceController(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
         var iClass = classLoader.loadClass("com.android.settings.applications.credentials.DefaultCombinedPreferenceController");
-        var aMethod = iClass.getDeclaredMethod("getCombinedProviderInfos", CredentialManager.class);
+        var aMethod = iClass.getDeclaredMethod("getCombinedProviderInfos", CredentialManager.class, int.class);
         hook(aMethod, IsInternationalBuildHooker.class);
     }
 
@@ -128,8 +131,13 @@ public class DebugHook extends XposedModule {
     private void hookIntentFactory(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
         var iClass = classLoader.loadClass("android.credentials.selection.IntentFactory");
         var aClass = classLoader.loadClass("android.credentials.selection.IntentCreationResult$Builder");
-        var aMethod = iClass.getDeclaredMethod("getOemOverrideComponentName", Context.class, aClass, int.class);
-        hook(aMethod, GetOemOverrideComponentNameHooker.class);
+        Method mGetOemOverrideComponentName;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            mGetOemOverrideComponentName = iClass.getDeclaredMethod("getOemOverrideComponentName", Context.class, aClass, int.class);
+        } else {
+            mGetOemOverrideComponentName = iClass.getDeclaredMethod("getOemOverrideComponentName", Context.class, aClass);
+        }
+        hook(mGetOemOverrideComponentName, GetOemOverrideComponentNameHooker.class);
     }
 
     private void hookCredentialManagerServiceImpl(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
