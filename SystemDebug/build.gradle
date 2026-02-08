@@ -72,6 +72,7 @@ android {
 
 
     dependenciesInfo.includeInApk false
+    enableKotlin = false
     namespace 'io.github.howard20181.systemservicedebug'
 }
 base {
@@ -80,6 +81,7 @@ base {
 dependencies {
     implementation "androidx.annotation:annotation:1.9.1"
     compileOnly 'io.github.libxposed:api:100'
+    implementation 'io.github.libxposed:helper:100.0.1'
     compileOnly project(":libxposed-compat")
     compileOnly project(":hiddenapi:stubs")
     implementation project(":hiddenapi:bridge")
@@ -96,5 +98,19 @@ tasks.register('applyXposedRelease', Exec) {
     group "xposed"
     dependsOn "installRelease"
     commandLine "adb", "shell", "svc", "power", "reboot"
+    ignoreExitValue = true
+}
+
+tasks.register('applyXposedSecurityCenterDebug', Exec) {
+    group "xposed"
+    dependsOn "installDebug"
+    commandLine "adb", "shell", "am", "force-stop", "com.miui.securitycenter"
+    ignoreExitValue = true
+}
+
+tasks.register('applyXposedSecurityCenterRelease', Exec) {
+    group "xposed"
+    dependsOn "installRelease"
+    commandLine "adb", "shell", "am", "force-stop", "com.miui.securitycenter"
     ignoreExitValue = true
 }

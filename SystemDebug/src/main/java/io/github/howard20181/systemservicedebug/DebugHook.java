@@ -16,22 +16,30 @@ import android.credentials.selection.IntentCreationResult;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.Executor;
 
+import dalvik.system.BaseDexClassLoader;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.annotations.AfterInvocation;
 import io.github.libxposed.api.annotations.BeforeInvocation;
 import io.github.libxposed.api.annotations.XposedHooker;
+import io.github.libxposed.helper.HookBuilder;
 
 @SuppressLint({"PrivateApi", "BlockedPrivateApi", "SoonBlockedPrivateApi"})
 public class DebugHook extends XposedModule {
     private static final String settingsPackageName = "com.android.settings";
+    private static final String securityCenterPackageName = "com.miui.securitycenter";
     private static XposedModule module;
+    private static XposedInterface ctx;
     private static Method isCustomFillUi;
     private static Field fIsInternationalBuildBoolean;
     private static boolean originalIsInternationalBuild;
@@ -39,6 +47,7 @@ public class DebugHook extends XposedModule {
     public DebugHook(XposedInterface base, ModuleLoadedParam param) {
         super(base, param);
         module = this;
+        ctx = base;
     }
 
     @Override
@@ -91,6 +100,8 @@ public class DebugHook extends XposedModule {
         if (!param.isFirstPackage()) return;
         var classLoader = param.getClassLoader();
         var pn = param.getPackageName();
+        var cacheDir = new File(param.getApplicationInfo().dataDir, "cache/libxposed");
+        var cacheFile = new File(cacheDir, "parseDex.json");
         try {
             var buildClass = classLoader.loadClass("miui.os.Build");
             fIsInternationalBuildBoolean = buildClass.getDeclaredField("IS_INTERNATIONAL_BUILD");
@@ -111,6 +122,53 @@ public class DebugHook extends XposedModule {
                 } catch (Exception e) {
                     log("hook DefaultCombinedPreferenceController failed", e);
                 }
+            }
+        } else if (pn.equals(securityCenterPackageName)) {
+            var appInfo = param.getApplicationInfo();
+            log("sourceDir: " + appInfo.sourceDir);
+            var future = HookBuilder.buildHooks(ctx, new BaseDexClassLoader(appInfo.sourceDir, null, null, classLoader), appInfo.sourceDir, builder -> {
+                if (cacheFile.exists()) {
+                    try {
+                        builder.setCacheInputStream(new FileInputStream(cacheFile));
+                    } catch (IOException e) {
+                        log("Failed to load cache", e);
+                    }
+                }
+                cacheDir.mkdirs();
+                try {
+                    builder.setCacheOutputStream(new FileOutputStream(cacheFile));
+                } catch (IOException e) {
+                    log("Failed to create cache output", e);
+                }
+                builder.setExceptionHandler(throwable -> {
+                    log("Hook building error: " + throwable.getMessage(), throwable);
+                    return true;
+                });
+                var appClass = builder.exactClass("Lcom/miui/securitycenter/Application;");
+                var settingsPutString = builder.exactMethod(
+                        "android.provider.Settings$Secure->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"
+                );
+                var mInvokePutString = builder.firstMethod(matcher -> matcher
+                        .setDeclaringClass(appClass)
+                        .setParameterCount(3)
+                        .setParameters(matcher.conjunction(Context.class, String.class, int.class))
+                        .setInvokedMethods(settingsPutString.observe())
+                );
+
+                builder.firstMethod(m -> m
+                        .setDeclaringClass(appClass)
+                        .setParameterCount(1)
+                        .setParameters(m.observe(0, Context.class))
+                        .setInvokedMethods(mInvokePutString.observe())
+                ).onMatch(method -> {
+                    log("Found " + method.getName());
+                    hook(method, DumpStackHooker.class);
+                });
+            });
+            try {
+                future.get();
+            } catch (Exception e) {
+                log("hook " + securityCenterPackageName + " failed", e);
             }
         }
     }

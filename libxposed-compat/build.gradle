@@ -17,4 +17,5 @@ android {
     lint {
         targetSdk 36
     }
+    enableKotlin = false
 }
