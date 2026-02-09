@@ -82,6 +82,7 @@ dependencies {
     implementation "androidx.annotation:annotation:1.9.1"
     compileOnly 'io.github.libxposed:api:100'
     implementation 'io.github.libxposed:helper:100.0.1'
+    implementation 'org.luckypray:dexkit:2.0.7'
     compileOnly project(":libxposed-compat")
     compileOnly project(":hiddenapi:stubs")
     implementation project(":hiddenapi:bridge")

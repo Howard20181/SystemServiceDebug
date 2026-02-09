@@ -11,19 +11,19 @@ import android.credentials.selection.IntentCreationResult;
 
 import androidx.annotation.NonNull;
 
+import org.luckypray.dexkit.DexKitBridge;
+import org.luckypray.dexkit.query.FindMethod;
+import org.luckypray.dexkit.query.matchers.MethodMatcher;
+
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
-import dalvik.system.BaseDexClassLoader;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.annotations.AfterInvocation;
 import io.github.libxposed.api.annotations.BeforeInvocation;
 import io.github.libxposed.api.annotations.XposedHooker;
-import io.github.libxposed.helper.HookBuilder;
 
 @SuppressLint({"PrivateApi", "BlockedPrivateApi", "SoonBlockedPrivateApi"})
 public class DebugHook extends XposedModule {
@@ -33,6 +33,10 @@ public class DebugHook extends XposedModule {
     private static XposedInterface ctx;
     private static Field fIsInternationalBuildBoolean;
     private static boolean originalIsInternationalBuild;
+
+    static {
+        System.loadLibrary("dexkit");
+    }
 
     public DebugHook(XposedInterface base, ModuleLoadedParam param) {
         super(base, param);
@@ -84,28 +88,36 @@ public class DebugHook extends XposedModule {
             }
         } else if (pn.equals(securityCenterPackageName)) {
             var appInfo = param.getApplicationInfo();
-            var future = HookBuilder.buildHooks(ctx,
-                    new BaseDexClassLoader(appInfo.sourceDir, null, appInfo.nativeLibraryDir, classLoader),
-                    appInfo.sourceDir, builder -> {
-                        cacheDir.mkdirs();
-                        try {
-                            builder.setCacheOutputStream(new FileOutputStream(cacheFile));
-                        } catch (IOException e) {
-                            log("Cache error", e);
-                        }
-                        builder.exactMethod(
-                                "Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"
-                        ).onMatch(method -> {
-                                    deoptimize(method);
-                                    hook(method, SettingsPutStringHooker.class);
-                                }
-                        );
-                    });
-            try {
-                future.get();
-            } catch (Exception e) {
-                log("Error", e);
+            try (var bridge = DexKitBridge.create(appInfo.sourceDir)) {
+                securityCenterApplicationHook(classLoader, bridge);
             }
+//            var future = HookBuilder.buildHooks(ctx,
+//                    new BaseDexClassLoader(appInfo.sourceDir, null, appInfo.nativeLibraryDir, classLoader),
+//                    appInfo.sourceDir, builder -> {
+//                        cacheDir.mkdirs();
+//                        try {
+//                            builder.setCacheOutputStream(new FileOutputStream(cacheFile));
+//                        } catch (IOException e) {
+//                            log("Cache error", e);
+//                        }
+//                        var putString = builder.exactMethod(
+//                                "Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"
+//                        ).onMatch(method -> {
+//                                    hook(method, SettingsPutStringHooker.class);
+//                                }
+//                        );
+//                        builder.methods(methodMatcher -> {
+//                            methodMatcher.setInvokedMethods(putString.observe());
+//                        }).onMatch(methods -> {
+//                            log("Deoptimize " + methods.spliterator().estimateSize() + " methods that call Settings.Secure.putString");
+//                            methods.forEach(this::deoptimize);
+//                        });
+//                    });
+//            try {
+//                future.get();
+//            } catch (Exception e) {
+//                log("Error", e);
+//            }
         }
     }
 
@@ -161,6 +173,54 @@ public class DebugHook extends XposedModule {
         }
     }
 
+    private void securityCenterApplicationHook(ClassLoader classLoader, DexKitBridge bridge) {
+        var cApplication = bridge.getClassData("Lcom/miui/securitycenter/Application;");
+        if (cApplication != null) {
+            try {
+                var mSetStringResourceConfigIfNeed = cApplication.findMethod(FindMethod.create()
+                        .matcher(MethodMatcher.create()
+                                .paramTypes(Context.class, String.class, int.class)
+                                .addInvoke("Landroid/content/res/Resources;->getString(I)Ljava/lang/String;")
+                                .addInvoke("Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z")
+                        )
+                ).single();
+                var setStringResourceConfigIfNeedMethodInstance = mSetStringResourceConfigIfNeed.getMethodInstance(classLoader);
+                deoptimize(setStringResourceConfigIfNeedMethodInstance);
+                var mConfigForAutofillService = cApplication.findMethod(FindMethod.create()
+                        .matcher(MethodMatcher.create()
+                                .paramTypes(Context.class)
+                                .addEqString("autofill_service")
+                                .addInvoke(mSetStringResourceConfigIfNeed.getDescriptor())
+                        )
+                ).single().getMethodInstance(classLoader);
+                hook(mConfigForAutofillService, ReturnSkipHooker.class);
+            } catch (NoSuchMethodException e) {
+                module.log("hook configForAutofillService", e);
+            }
+            try {
+                var mSetStringArrayResourceConfigIfNeed = cApplication.findMethod(FindMethod.create()
+                        .matcher(MethodMatcher.create()
+                                .paramTypes(Context.class, String.class, int.class)
+                                .addInvoke("Landroid/content/res/Resources;->getStringArray(I)[Ljava/lang/String;")
+                                .addInvoke("Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z")
+                        )
+                ).single();
+                var setStringArrayResourceConfigIfNeedMethodInstance = mSetStringArrayResourceConfigIfNeed.getMethodInstance(classLoader);
+                deoptimize(setStringArrayResourceConfigIfNeedMethodInstance);
+                var mSetDefaultConfigForAutofillAndCredentialManager = cApplication.findMethod(FindMethod.create()
+                        .matcher(MethodMatcher.create()
+                                .paramTypes(Context.class)
+                                .usingEqStrings("credential_service", "credential_service_primary")
+                                .addInvoke(mSetStringArrayResourceConfigIfNeed.getDescriptor())
+                        )
+                ).single().getMethodInstance(classLoader);
+                hook(mSetDefaultConfigForAutofillAndCredentialManager, ReturnSkipHooker.class);
+            } catch (NoSuchMethodException e) {
+                module.log("hook setDefaultConfigForAutofillAndCredentialManager", e);
+            }
+        }
+    }
+
     @XposedHooker
     private static class SettingsPutStringHooker implements Hooker {
         @BeforeInvocation
@@ -176,27 +236,17 @@ public class DebugHook extends XposedModule {
     }
 
     @XposedHooker
+    private static class ReturnSkipHooker implements Hooker {
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) {
+            callback.returnAndSkip(null);
+        }
+    }
+
+    @XposedHooker
     private static class ReturnTrueHooker implements Hooker {
         @BeforeInvocation
         public static void before(@NonNull BeforeHookCallback callback) {
-            var args = callback.getArgs();
-            var sb = new StringBuilder(callback.getMember() instanceof Method ? callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName() : callback.getMember().getName());
-            if (args.length > 0) {
-                sb.append("(");
-                for (int i = 0; i < args.length; i++) {
-                    if (i > 0) {
-                        sb.append(", ");
-                    }
-                    var arg = args[i];
-                    if (arg == null) {
-                        sb.append("null");
-                    } else {
-                        sb.append(arg.getClass().getName()).append(" \"").append(arg).append("\"");
-                    }
-                }
-                sb.append(")");
-            }
-            module.log("return true and skip for " + sb);
             callback.returnAndSkip(true);
         }
     }
