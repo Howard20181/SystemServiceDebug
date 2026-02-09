@@ -69,17 +69,15 @@ public class DebugHook extends XposedModule {
             log("find IS_INTERNATIONAL_BUILD failed", e);
         }
         if (pn.equals(settingsPackageName)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-                try {
-                    hookDefaultCombinedPicker(classLoader);
-                } catch (Exception e) {
-                    log("hook DefaultCombinedPicker failed", e);
-                }
-                try {
-                    hookDefaultCombinedPreferenceController(classLoader);
-                } catch (Exception e) {
-                    log("hook DefaultCombinedPreferenceController failed", e);
-                }
+            try {
+                hookDefaultCombinedPicker(classLoader);
+            } catch (Exception e) {
+                log("hook DefaultCombinedPicker failed", e);
+            }
+            try {
+                hookDefaultCombinedPreferenceController(classLoader);
+            } catch (Exception e) {
+                log("hook DefaultCombinedPreferenceController failed", e);
             }
         } else if (pn.equals(securityCenterPackageName)) {
             var appInfo = param.getApplicationInfo();
@@ -89,16 +87,26 @@ public class DebugHook extends XposedModule {
         }
     }
 
-    private void hookDefaultCombinedPreferenceController(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+    private void hookDefaultCombinedPreferenceController(ClassLoader classLoader) throws ClassNotFoundException {
         var iClass = classLoader.loadClass("com.android.settings.applications.credentials.DefaultCombinedPreferenceController");
-        var aMethod = iClass.getDeclaredMethod("getCombinedProviderInfos", CredentialManager.class, int.class);
-        hook(aMethod, IsInternationalBuildHooker.class);
+        if (iClass != null) {
+            try {
+                var aMethod = iClass.getDeclaredMethod("getCombinedProviderInfos", CredentialManager.class, int.class);
+                hook(aMethod, IsInternationalBuildHooker.class);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
     }
 
-    private void hookDefaultCombinedPicker(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
+    private void hookDefaultCombinedPicker(ClassLoader classLoader) throws ClassNotFoundException {
         var iClass = classLoader.loadClass("com.android.settings.applications.credentials.DefaultCombinedPicker");
-        var aMethod = iClass.getDeclaredMethod("setDefaultKey", String.class);
-        hook(aMethod, IsInternationalBuildHooker.class);
+        if (iClass != null) {
+            try {
+                var aMethod = iClass.getDeclaredMethod("setDefaultKey", String.class);
+                hook(aMethod, IsInternationalBuildHooker.class);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
     }
 
     private void hookIntentFactory(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
@@ -181,8 +189,7 @@ public class DebugHook extends XposedModule {
             String oemComponentString = "com.google.android.gms/.identitycredentials.ui.CredentialChooserActivity";
             ComponentName oemComponentName = null;
             try {
-                oemComponentName = ComponentName.unflattenFromString(
-                        oemComponentString);
+                oemComponentName = ComponentName.unflattenFromString(oemComponentString);
             } catch (Exception e) {
                 module.log("Failed to parse OEM component name " + oemComponentString + ": " + e);
             }
@@ -191,41 +198,28 @@ public class DebugHook extends XposedModule {
                     intentResultBuilder.setOemUiPackageName(oemComponentName.getPackageName());
                     ActivityInfo info = context.getPackageManager().getActivityInfo(
                             oemComponentName,
-                            PackageManager.ComponentInfoFlags.of(
-                                    PackageManager.MATCH_SYSTEM_ONLY));
+                            PackageManager.ComponentInfoFlags.of(PackageManager.MATCH_SYSTEM_ONLY));
                     boolean oemComponentEnabled = info.enabled;
-                    int runtimeComponentEnabledState = context.getPackageManager()
-                            .getComponentEnabledSetting(oemComponentName);
-                    if (runtimeComponentEnabledState == PackageManager
-                            .COMPONENT_ENABLED_STATE_ENABLED) {
+                    int runtimeComponentEnabledState = context.getPackageManager().getComponentEnabledSetting(oemComponentName);
+                    if (runtimeComponentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
                         oemComponentEnabled = true;
-                    } else if (runtimeComponentEnabledState == PackageManager
-                            .COMPONENT_ENABLED_STATE_DISABLED) {
+                    } else if (runtimeComponentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
                         oemComponentEnabled = false;
                     }
                     if (oemComponentEnabled && info.exported) {
-                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult
-                                .OemUiUsageStatus.SUCCESS);
-                        module.log(
-                                "Found enabled oem CredMan UI component."
-                                        + oemComponentString);
+                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.SUCCESS);
+                        module.log("Found enabled oem CredMan UI component." + oemComponentString);
                         result = oemComponentName;
                     } else {
-                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult
-                                .OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_FOUND_BUT_NOT_ENABLED);
-                        module.log(
-                                "Found enabled oem CredMan UI component but it was not "
-                                        + "enabled.");
+                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_FOUND_BUT_NOT_ENABLED);
+                        module.log("Found enabled oem CredMan UI component but it was not " + "enabled.");
                     }
                 } catch (PackageManager.NameNotFoundException e) {
-                    intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus
-                            .OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
-                    module.log("Unable to find oem CredMan UI component: "
-                            + oemComponentString + ".");
+                    intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
+                    module.log("Unable to find oem CredMan UI component: " + oemComponentString + ".");
                 }
             } else {
-                intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus
-                        .OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
+                intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
                 module.log("Invalid OEM ComponentName format.");
             }
             callback.returnAndSkip(result);
