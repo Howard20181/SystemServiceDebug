@@ -15,7 +15,6 @@ import org.luckypray.dexkit.DexKitBridge;
 import org.luckypray.dexkit.query.FindMethod;
 import org.luckypray.dexkit.query.matchers.MethodMatcher;
 
-import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -30,7 +29,6 @@ public class DebugHook extends XposedModule {
     private static final String settingsPackageName = "com.android.settings";
     private static final String securityCenterPackageName = "com.miui.securitycenter";
     private static XposedModule module;
-    private static XposedInterface ctx;
     private static Field fIsInternationalBuildBoolean;
     private static boolean originalIsInternationalBuild;
 
@@ -41,7 +39,6 @@ public class DebugHook extends XposedModule {
     public DebugHook(XposedInterface base, ModuleLoadedParam param) {
         super(base, param);
         module = this;
-        ctx = base;
     }
 
     @Override
@@ -63,8 +60,6 @@ public class DebugHook extends XposedModule {
         if (!param.isFirstPackage()) return;
         var classLoader = param.getClassLoader();
         var pn = param.getPackageName();
-        var cacheDir = new File(param.getApplicationInfo().dataDir, "cache/libxposed");
-        var cacheFile = new File(cacheDir, "parseDex.cache");
         try {
             var buildClass = classLoader.loadClass("miui.os.Build");
             fIsInternationalBuildBoolean = buildClass.getDeclaredField("IS_INTERNATIONAL_BUILD");
@@ -91,33 +86,6 @@ public class DebugHook extends XposedModule {
             try (var bridge = DexKitBridge.create(appInfo.sourceDir)) {
                 securityCenterApplicationHook(classLoader, bridge);
             }
-//            var future = HookBuilder.buildHooks(ctx,
-//                    new BaseDexClassLoader(appInfo.sourceDir, null, appInfo.nativeLibraryDir, classLoader),
-//                    appInfo.sourceDir, builder -> {
-//                        cacheDir.mkdirs();
-//                        try {
-//                            builder.setCacheOutputStream(new FileOutputStream(cacheFile));
-//                        } catch (IOException e) {
-//                            log("Cache error", e);
-//                        }
-//                        var putString = builder.exactMethod(
-//                                "Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z"
-//                        ).onMatch(method -> {
-//                                    hook(method, SettingsPutStringHooker.class);
-//                                }
-//                        );
-//                        builder.methods(methodMatcher -> {
-//                            methodMatcher.setInvokedMethods(putString.observe());
-//                        }).onMatch(methods -> {
-//                            log("Deoptimize " + methods.spliterator().estimateSize() + " methods that call Settings.Secure.putString");
-//                            methods.forEach(this::deoptimize);
-//                        });
-//                    });
-//            try {
-//                future.get();
-//            } catch (Exception e) {
-//                log("Error", e);
-//            }
         }
     }
 
@@ -145,33 +113,6 @@ public class DebugHook extends XposedModule {
         hook(mGetOemOverrideComponentName, GetOemOverrideComponentNameHooker.class);
     }
 
-
-    @XposedHooker
-    private static class DumpStackHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            var here = new RuntimeException("here");
-            var args = callback.getArgs();
-            var sb = new StringBuilder(callback.getMember() instanceof Method ? callback.getMember().getDeclaringClass().getSimpleName() + "." + callback.getMember().getName() : callback.getMember().getName());
-            if (args.length > 0) {
-                sb.append("(");
-                for (int i = 0; i < args.length; i++) {
-                    if (i > 0) {
-                        sb.append(", ");
-                    }
-                    var arg = args[i];
-                    if (arg == null) {
-                        sb.append("null");
-                    } else {
-                        sb.append(arg.getClass().getName()).append(" \"").append(arg).append("\"");
-                    }
-                }
-                sb.append(")");
-            }
-            here.fillInStackTrace();
-            module.log(sb.toString(), here);
-        }
-    }
 
     private void securityCenterApplicationHook(ClassLoader classLoader, DexKitBridge bridge) {
         var cApplication = bridge.getClassData("Lcom/miui/securitycenter/Application;");
@@ -222,32 +163,10 @@ public class DebugHook extends XposedModule {
     }
 
     @XposedHooker
-    private static class SettingsPutStringHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            var args = callback.getArgs();
-            if (args.length >= 1 && args[1] instanceof String key) {
-                if ("autofill_service".equals(key) || "credential_service".equals(key) || "credential_service_primary".equals(key)) {
-                    module.log("skip putString for " + key);
-                    callback.returnAndSkip(true);
-                }
-            }
-        }
-    }
-
-    @XposedHooker
     private static class ReturnSkipHooker implements Hooker {
         @BeforeInvocation
         public static void before(@NonNull BeforeHookCallback callback) {
             callback.returnAndSkip(null);
-        }
-    }
-
-    @XposedHooker
-    private static class ReturnTrueHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            callback.returnAndSkip(true);
         }
     }
 

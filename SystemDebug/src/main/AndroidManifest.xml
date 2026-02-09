@@ -7,5 +7,15 @@
         android:description="@string/xposed_description"
         android:supportsRtl="true"
         tools:ignore="AllowBackup,MissingApplicationIcon" />
+    <overlay
+        android:targetPackage="io.github.howard20181.systemservicedebug"
+        android:isStatic="true"
+        android:requiredSystemPropertyName="ro.miui.ui.version.code"
+        android:requiredSystemPropertyValue="816"/>
+    <overlay
+        android:targetPackage="io.github.howard20181.systemservicedebug"
+        android:isStatic="true"
+        android:requiredSystemPropertyName="ro.miui.build.region"
+        android:requiredSystemPropertyValue="cn"/>
 
 </manifest>
