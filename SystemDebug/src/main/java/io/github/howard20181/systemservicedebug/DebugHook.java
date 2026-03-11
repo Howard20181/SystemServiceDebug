@@ -1,21 +1,16 @@
 package io.github.howard20181.systemservicedebug;
 
 import android.annotation.SuppressLint;
-import android.content.ComponentName;
 import android.content.Context;
-import android.content.pm.ActivityInfo;
-import android.content.pm.PackageManager;
-import android.credentials.CredentialManager;
-import android.os.Build;
-import android.credentials.selection.IntentCreationResult;
+import android.inputmethodservice.InputMethodService;
+import android.util.Log;
+import android.util.TypedValue;
+import android.view.inputmethod.InputMethodManager;
 
 import androidx.annotation.NonNull;
 
-import org.luckypray.dexkit.DexKitBridge;
-import org.luckypray.dexkit.query.FindMethod;
-import org.luckypray.dexkit.query.matchers.MethodMatcher;
-
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedInterface;
@@ -26,219 +21,292 @@ import io.github.libxposed.api.annotations.XposedHooker;
 
 @SuppressLint({"PrivateApi", "BlockedPrivateApi", "SoonBlockedPrivateApi"})
 public class DebugHook extends XposedModule {
-    private static final String settingsPackageName = "com.android.settings";
-    private static final String securityCenterPackageName = "com.miui.securitycenter";
+    private static final String TAG = "ImeHook";
     private static XposedModule module;
-    private static Field fIsInternationalBuildBoolean;
-    private static boolean originalIsInternationalBuild;
-
-    static {
-        System.loadLibrary("dexkit");
-    }
+    private static Field sBottomViewHelper = null;
+    private static Field mBottomViewHelperImm = null;
+    private static Field fieldIsInternationalBuild = null;
+    private static Field mInputMethodService = null;
+    private static Method methodInputMethodServiceStubGetInstance = null;
+    private static String config_navBarLayoutHandle = "";
 
     public DebugHook(XposedInterface base, ModuleLoadedParam param) {
         super(base, param);
         module = this;
     }
 
-    @Override
     public void onSystemServerLoaded(@NonNull SystemServerLoadedParam param) {
         var classLoader = param.getClassLoader();
         try {
             try {
-                hookIntentFactory(classLoader);
+                hookInputMethodManagerServiceImpl(classLoader);
             } catch (Exception e) {
-                log("hook IntentFactory failed", e);
+                log(Log.ERROR, TAG, "hook InputMethodManagerServiceImpl", e);
             }
-        } catch (Throwable tr) {
-            log("Error hooking system service", tr);
+        } catch (Exception e) {
+            log(Log.ERROR, TAG, "hook system server", e);
         }
     }
 
-    @Override
     public void onPackageLoaded(@NonNull PackageLoadedParam param) {
         if (!param.isFirstPackage()) return;
-        var classLoader = param.getClassLoader();
         var pn = param.getPackageName();
+        var classLoader = param.getClassLoader();
         try {
-            var buildClass = classLoader.loadClass("miui.os.Build");
-            fIsInternationalBuildBoolean = buildClass.getDeclaredField("IS_INTERNATIONAL_BUILD");
-            fIsInternationalBuildBoolean.setAccessible(true);
-            originalIsInternationalBuild = fIsInternationalBuildBoolean.getBoolean(null);
+            try {
+                hookInputMethodService(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "hook InputMethodService", e);
+            }
+            try {
+                hookNavigationBarController(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "hook NavigationBarController", e);
+            }
+            try {
+                hookNavigationBarInflaterView(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "hook NavigationBarInflaterView", e);
+            }
+            try {
+                hookNavigationBarView(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "hook NavigationBarView", e);
+            }
+            try {
+                hookInputMethodBottomManager(classLoader);
+            } catch (Exception e) {
+                log(Log.ERROR, TAG, "hook InputMethodBottomManager", e);
+            }
+        } catch (Throwable tr) {
+            log(Log.ERROR, TAG, "Error hooking " + pn, tr);
+        }
+    }
+
+    private void hookInputMethodService(ClassLoader classLoader) throws NoSuchMethodException,
+            ClassNotFoundException, NoSuchFieldException {
+        var classInputMethodService = classLoader.loadClass("android.inputmethodservice.InputMethodService");
+        var classInputMethodServiceStub = classLoader.loadClass("android.inputmethodservice.InputMethodServiceStub");
+        methodInputMethodServiceStubGetInstance = classInputMethodServiceStub.getDeclaredMethod("getInstance");
+        fieldIsInternationalBuild = classInputMethodService.getDeclaredField("IS_INTERNATIONAL_BUILD");
+        fieldIsInternationalBuild.setAccessible(true);
+        var methodHideImeRenderGesturalNavButtons = classInputMethodService.getDeclaredMethod("hideImeRenderGesturalNavButtons", String.class);
+        hook(methodHideImeRenderGesturalNavButtons, HideImeRenderGesturalNavButtonsHooker.class);
+    }
+
+    private void hookNavigationBarController(ClassLoader classLoader) throws NoSuchMethodException,
+            ClassNotFoundException, NoSuchFieldException {
+        var classNavigationBarController$Impl = classLoader.loadClass("android.inputmethodservice.NavigationBarController$Impl");
+        mInputMethodService = classNavigationBarController$Impl.getDeclaredField("mService");
+        mInputMethodService.setAccessible(true);
+        var getImeCaptionBarHeight = classNavigationBarController$Impl.getDeclaredMethod("getImeCaptionBarHeight", boolean.class);
+        hook(getImeCaptionBarHeight, GetImeCaptionBarHeightHooker.class);
+    }
+
+    private void hookNavigationBarInflaterView(ClassLoader classLoader) throws NoSuchMethodException,
+            ClassNotFoundException {
+        var classNavigationBarInflaterView = classLoader.loadClass("android.inputmethodservice.navigationbar.NavigationBarInflaterView");
+        var methodInflateLayout = classNavigationBarInflaterView.getDeclaredMethod("inflateLayout", String.class);
+        var prefs = getRemotePreferences("conf");
+        config_navBarLayoutHandle = prefs.getString("nav_bar_layout_handle", "");
+        prefs.registerOnSharedPreferenceChangeListener((sharedPreferences, key) -> {
+            if ("nav_bar_layout_handle".equals(key)) {
+                config_navBarLayoutHandle = sharedPreferences.getString(key, "");
+            }
+        });
+        hook(methodInflateLayout, InflateLayoutHooker.class);
+    }
+
+    private static class InflateLayoutHooker implements Hooker {
+
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) {
+            if (callback.getArgs()[0] instanceof String && !config_navBarLayoutHandle.isBlank()) {
+                callback.getArgs()[0] = config_navBarLayoutHandle;
+            }
+        }
+    }
+
+    private void hookNavigationBarView(ClassLoader classLoader) {
+        try {
+            var classDeadZone = classLoader.loadClass("android.inputmethodservice.navigationbar.DeadZone");
+            var methodOnConfigurationChanged = classDeadZone.getDeclaredMethod("onConfigurationChanged", int.class);
+            hook(methodOnConfigurationChanged, DeadZoneOnConfigurationChangedHooker.class);
         } catch (Exception e) {
-            log("find IS_INTERNATIONAL_BUILD failed", e);
-        }
-        if (pn.equals(settingsPackageName)) {
-            try {
-                hookDefaultCombinedPicker(classLoader);
-            } catch (Exception e) {
-                log("hook DefaultCombinedPicker failed", e);
-            }
-            try {
-                hookDefaultCombinedPreferenceController(classLoader);
-            } catch (Exception e) {
-                log("hook DefaultCombinedPreferenceController failed", e);
-            }
-        } else if (pn.equals(securityCenterPackageName)) {
-            var appInfo = param.getApplicationInfo();
-            try (var bridge = DexKitBridge.create(appInfo.sourceDir)) {
-                securityCenterApplicationHook(classLoader, bridge);
-            }
-        }
-    }
-
-    private void hookDefaultCombinedPreferenceController(ClassLoader classLoader) throws ClassNotFoundException {
-        var iClass = classLoader.loadClass("com.android.settings.applications.credentials.DefaultCombinedPreferenceController");
-        if (iClass != null) {
-            try {
-                var aMethod = iClass.getDeclaredMethod("getCombinedProviderInfos", CredentialManager.class, int.class);
-                hook(aMethod, IsInternationalBuildHooker.class);
-            } catch (NoSuchMethodException ignored) {
-            }
-        }
-    }
-
-    private void hookDefaultCombinedPicker(ClassLoader classLoader) throws ClassNotFoundException {
-        var iClass = classLoader.loadClass("com.android.settings.applications.credentials.DefaultCombinedPicker");
-        if (iClass != null) {
-            try {
-                var aMethod = iClass.getDeclaredMethod("setDefaultKey", String.class);
-                hook(aMethod, IsInternationalBuildHooker.class);
-            } catch (NoSuchMethodException ignored) {
-            }
-        }
-    }
-
-    private void hookIntentFactory(ClassLoader classLoader) throws NoSuchMethodException, ClassNotFoundException {
-        var iClass = classLoader.loadClass("android.credentials.selection.IntentFactory");
-        var aClass = classLoader.loadClass("android.credentials.selection.IntentCreationResult$Builder");
-        Method mGetOemOverrideComponentName;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            mGetOemOverrideComponentName = iClass.getDeclaredMethod("getOemOverrideComponentName", Context.class, aClass, int.class);
-        } else {
-            mGetOemOverrideComponentName = iClass.getDeclaredMethod("getOemOverrideComponentName", Context.class, aClass);
-        }
-        hook(mGetOemOverrideComponentName, GetOemOverrideComponentNameHooker.class);
-    }
-
-
-    private void securityCenterApplicationHook(ClassLoader classLoader, DexKitBridge bridge) {
-        var cApplication = bridge.getClassData("Lcom/miui/securitycenter/Application;");
-        if (cApplication != null) {
-            try {
-                var mSetStringResourceConfigIfNeed = cApplication.findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create()
-                                .paramTypes(Context.class, String.class, int.class)
-                                .addInvoke("Landroid/content/res/Resources;->getString(I)Ljava/lang/String;")
-                                .addInvoke("Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z")
-                        )
-                ).single();
-                var setStringResourceConfigIfNeedMethodInstance = mSetStringResourceConfigIfNeed.getMethodInstance(classLoader);
-                deoptimize(setStringResourceConfigIfNeedMethodInstance);
-                var mConfigForAutofillService = cApplication.findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create()
-                                .paramTypes(Context.class)
-                                .addEqString("autofill_service")
-                                .addInvoke(mSetStringResourceConfigIfNeed.getDescriptor())
-                        )
-                ).single().getMethodInstance(classLoader);
-                hook(mConfigForAutofillService, ReturnSkipHooker.class);
-            } catch (NoSuchMethodException e) {
-                module.log("hook configForAutofillService", e);
-            }
-            try {
-                var mSetStringArrayResourceConfigIfNeed = cApplication.findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create()
-                                .paramTypes(Context.class, String.class, int.class)
-                                .addInvoke("Landroid/content/res/Resources;->getStringArray(I)[Ljava/lang/String;")
-                                .addInvoke("Landroid/provider/Settings$Secure;->putString(Landroid/content/ContentResolver;Ljava/lang/String;Ljava/lang/String;)Z")
-                        )
-                ).single();
-                var setStringArrayResourceConfigIfNeedMethodInstance = mSetStringArrayResourceConfigIfNeed.getMethodInstance(classLoader);
-                deoptimize(setStringArrayResourceConfigIfNeedMethodInstance);
-                var mSetDefaultConfigForAutofillAndCredentialManager = cApplication.findMethod(FindMethod.create()
-                        .matcher(MethodMatcher.create()
-                                .paramTypes(Context.class)
-                                .usingEqStrings("credential_service", "credential_service_primary")
-                                .addInvoke(mSetStringArrayResourceConfigIfNeed.getDescriptor())
-                        )
-                ).single().getMethodInstance(classLoader);
-                hook(mSetDefaultConfigForAutofillAndCredentialManager, ReturnSkipHooker.class);
-            } catch (NoSuchMethodException e) {
-                module.log("hook setDefaultConfigForAutofillAndCredentialManager", e);
-            }
+            log(Log.ERROR, TAG, "hook DeadZone", e);
         }
     }
 
     @XposedHooker
-    private static class ReturnSkipHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            callback.returnAndSkip(null);
-        }
-    }
-
-    @XposedHooker
-    private static class GetOemOverrideComponentNameHooker implements Hooker {
-        @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) {
-            var args = callback.getArgs();
-            var context = (Context) args[0];
-            var intentResultBuilder = (IntentCreationResult.Builder) args[1];
-            ComponentName result = null;
-            String oemComponentString = "com.google.android.gms/.identitycredentials.ui.CredentialChooserActivity";
-            ComponentName oemComponentName = null;
+    private static class DeadZoneOnConfigurationChangedHooker implements Hooker {
+        @AfterInvocation
+        public static void after(@NonNull AfterHookCallback callback) {
             try {
-                oemComponentName = ComponentName.unflattenFromString(oemComponentString);
-            } catch (Exception e) {
-                module.log("Failed to parse OEM component name " + oemComponentString + ": " + e);
-            }
-            if (oemComponentName != null) {
-                try {
-                    intentResultBuilder.setOemUiPackageName(oemComponentName.getPackageName());
-                    ActivityInfo info = context.getPackageManager().getActivityInfo(
-                            oemComponentName,
-                            PackageManager.ComponentInfoFlags.of(PackageManager.MATCH_SYSTEM_ONLY));
-                    boolean oemComponentEnabled = info.enabled;
-                    int runtimeComponentEnabledState = context.getPackageManager().getComponentEnabledSetting(oemComponentName);
-                    if (runtimeComponentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
-                        oemComponentEnabled = true;
-                    } else if (runtimeComponentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_DISABLED) {
-                        oemComponentEnabled = false;
-                    }
-                    if (oemComponentEnabled && info.exported) {
-                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.SUCCESS);
-                        module.log("Found enabled oem CredMan UI component." + oemComponentString);
-                        result = oemComponentName;
-                    } else {
-                        intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_FOUND_BUT_NOT_ENABLED);
-                        module.log("Found enabled oem CredMan UI component but it was not " + "enabled.");
-                    }
-                } catch (PackageManager.NameNotFoundException e) {
-                    intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
-                    module.log("Unable to find oem CredMan UI component: " + oemComponentString + ".");
+                var obj = callback.getThisObject();
+                if (obj == null) return;
+                var fSizeMin = obj.getClass().getDeclaredField("mSizeMin");
+                fSizeMin.setAccessible(true);
+                int sizeMin = fSizeMin.getInt(obj);
+                var fNavView = obj.getClass().getDeclaredField("mNavigationBarView");
+                fNavView.setAccessible(true);
+                if (fNavView.get(obj) instanceof android.view.View navView) {
+                    navView.setPadding(
+                            navView.getPaddingLeft(),
+                            navView.getPaddingTop(),
+                            navView.getPaddingRight(),
+                            sizeMin
+                    );
                 }
-            } else {
-                intentResultBuilder.setOemUiUsageStatus(IntentCreationResult.OemUiUsageStatus.OEM_UI_CONFIG_SPECIFIED_BUT_NOT_FOUND);
-                module.log("Invalid OEM ComponentName format.");
+
+                fSizeMin.setInt(obj, 0);
+            } catch (Exception e) {
+                module.log(Log.ERROR, TAG, "DeadZoneOnConfigurationChangedHooker", e);
             }
-            callback.returnAndSkip(result);
         }
     }
 
-    @XposedHooker
-    private static class IsInternationalBuildHooker implements Hooker {
+    private static class GetImeCaptionBarHeightHooker implements Hooker {
+
         @BeforeInvocation
-        public static void before(@NonNull BeforeHookCallback callback) throws IllegalAccessException {
-            if (fIsInternationalBuildBoolean != null) {
-                fIsInternationalBuildBoolean.setBoolean(null, true);
+        public static void before(@NonNull BeforeHookCallback callback) {
+            if (callback.getArgs()[0] instanceof Boolean imeDrawsImeNavBar && imeDrawsImeNavBar) {
+                try {
+                    var mService = mInputMethodService.get(callback.getThisObject());
+                    if (mService instanceof InputMethodService inputMethodService) {
+                        var imeCaptionBarHeight = Math.round(TypedValue.applyDimension(
+                                TypedValue.COMPLEX_UNIT_DIP,
+                                48,
+                                inputMethodService.getResources().getDisplayMetrics()
+                        ));
+                        callback.returnAndSkip(imeCaptionBarHeight);
+                    }
+                } catch (IllegalAccessException e) {
+                    module.log(Log.ERROR, TAG, "GetImeCaptionBarHeightHooker", e);
+                }
             }
+        }
+    }
+
+    private static class HideImeRenderGesturalNavButtonsHooker implements Hooker {
+        private static boolean originalIsInternationalBuild;
+
+        @BeforeInvocation
+        public static boolean before(@NonNull BeforeHookCallback callback) {
+            if (fieldIsInternationalBuild != null) {
+                try {
+                    originalIsInternationalBuild = fieldIsInternationalBuild.getBoolean(callback.getThisObject());
+                    var InputMethodServiceInjector = module.invokeOrigin(methodInputMethodServiceStubGetInstance, callback.getThisObject());
+                    if (InputMethodServiceInjector != null) {
+                        var methodIsImeSupport = InputMethodServiceInjector.getClass().getDeclaredMethod("isImeSupport", Context.class);
+                        methodIsImeSupport.setAccessible(true);
+                        if (callback.getThisObject() instanceof InputMethodService inputMethodService) {
+                            if (module.invokeOrigin(methodIsImeSupport, InputMethodServiceInjector,
+                                    inputMethodService.getApplicationContext()) instanceof Boolean isImeSupport && !isImeSupport) {
+                                fieldIsInternationalBuild.setBoolean(callback.getThisObject(), true);
+                            }
+                        }
+                    }
+                } catch (IllegalAccessException | InvocationTargetException |
+                         NoSuchMethodException e) {
+                    module.log(Log.ERROR, TAG, "HideImeRenderGesturalNavButtonsHooker", e);
+                }
+            }
+            return originalIsInternationalBuild;
         }
 
         @AfterInvocation
-        public static void after(@NonNull AfterHookCallback callback) throws IllegalAccessException {
-            if (fIsInternationalBuildBoolean != null) {
-                fIsInternationalBuildBoolean.setBoolean(null, originalIsInternationalBuild);
+        public static void after(@NonNull AfterHookCallback callback, boolean originalIsInternationalBuild) {
+            if (fieldIsInternationalBuild != null) {
+                try {
+                    fieldIsInternationalBuild.setBoolean(callback.getThisObject(), originalIsInternationalBuild);
+                } catch (IllegalAccessException e) {
+                    module.log(Log.ERROR, TAG, "HideImeRenderGesturalNavButtonsHooker", e);
+                }
+            }
+        }
+    }
+
+    private void hookInputMethodManagerServiceImpl(ClassLoader classLoader)
+            throws NoSuchMethodException, ClassNotFoundException {
+        var classInputMethodManagerServiceImpl = classLoader.loadClass("com.android.server.inputmethod.InputMethodManagerServiceImpl");
+        var methodIsCallingBetweenCustomIME = classInputMethodManagerServiceImpl.getDeclaredMethod("isCallingBetweenCustomIME", Context.class, int.class, String.class);
+        hook(methodIsCallingBetweenCustomIME, IsCallingBetweenCustomIMEHooker.class);
+    }
+
+    private void hookInputMethodBottomManager(ClassLoader classLoader) throws NoSuchMethodException,
+            ClassNotFoundException {
+        var classInputMethodModuleManager = classLoader.loadClass("android.inputmethodservice.InputMethodModuleManager");
+        var methodLoadDex = classInputMethodModuleManager.getDeclaredMethod("loadDex",
+                ClassLoader.class, String.class);
+        hook(methodLoadDex, GetClassloaderHooker.class);
+    }
+
+    @XposedHooker
+    private static class IsCallingBetweenCustomIMEHooker implements Hooker {
+
+        @AfterInvocation
+        public static void after(@NonNull AfterHookCallback callback) {
+            var args = callback.getArgs();
+            if (callback.getResult() instanceof Boolean isCallingBetweenCustomIME
+                    && !isCallingBetweenCustomIME && args.length >= 3
+                    && args[0] instanceof Context context && args[1] instanceof Integer uid) {
+                var imm = (InputMethodManager) context.getSystemService(Context.INPUT_METHOD_SERVICE);
+                var currentInputMethodInfo = imm.getCurrentInputMethodInfo();
+                if (currentInputMethodInfo != null) {
+                    var currentInputMethodInfoPackageName = currentInputMethodInfo.getPackageName();
+                    var packagesForQueryingUid = context.getPackageManager().getPackagesForUid(uid);
+                    if (packagesForQueryingUid != null) {
+                        for (var queryingUidPackageName : packagesForQueryingUid) {
+                            if (currentInputMethodInfoPackageName.equals(queryingUidPackageName)) {
+                                callback.setResult(true);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @XposedHooker
+    private static class GetClassloaderHooker implements Hooker {
+
+        @AfterInvocation
+        public static void after(@NonNull AfterHookCallback callback) {
+            try {
+                var args = callback.getArgs();
+                if (args.length >= 1 && args[0] instanceof ClassLoader imeModuleClassLoader) {
+                    var classInputMethodBottomManager = imeModuleClassLoader.loadClass("com.miui.inputmethod.InputMethodBottomManager");
+                    var methodGetSupportIme = classInputMethodBottomManager.getDeclaredMethod("getSupportIme");
+                    var classBottomViewHelper = imeModuleClassLoader.loadClass("com.miui.inputmethod.InputMethodBottomManager$BottomViewHelper");
+                    mBottomViewHelperImm = classBottomViewHelper.getDeclaredField("mImm");
+                    mBottomViewHelperImm.setAccessible(true);
+                    sBottomViewHelper = classInputMethodBottomManager.getDeclaredField("sBottomViewHelper");
+                    sBottomViewHelper.setAccessible(true);
+                    module.hook(methodGetSupportIme, GetSupportImeHooker.class);
+                }
+            } catch (NoSuchFieldException | ClassNotFoundException |
+                     NoSuchMethodException e) {
+                module.log(Log.ERROR, TAG, "GetClassloaderHooker", e);
+            }
+        }
+    }
+
+    @XposedHooker
+    private static class GetSupportImeHooker implements Hooker {
+
+        @BeforeInvocation
+        public static void before(@NonNull BeforeHookCallback callback) {
+            try {
+                var instanceBottomViewHelper = sBottomViewHelper.get(callback.getThisObject());
+                if (instanceBottomViewHelper != null && mBottomViewHelperImm != null) {
+                    if (mBottomViewHelperImm.get(instanceBottomViewHelper) instanceof InputMethodManager inputMethodManager) {
+                        var enabledInputMethodList = inputMethodManager.getEnabledInputMethodList();
+                        callback.returnAndSkip(enabledInputMethodList);
+                    }
+                }
+            } catch (IllegalAccessException e) {
+                module.log(Log.ERROR, TAG, "GetSupportImeHooker", e);
             }
         }
     }

@@ -1,0 +1,29 @@
+package io.github.howard20181.systemservicedebug;
+
+import android.app.Application;
+import android.util.Log;
+
+import androidx.annotation.NonNull;
+
+import io.github.libxposed.service.XposedService;
+import io.github.libxposed.service.XposedServiceHelper;
+
+public class App extends Application {
+    public static XposedService mService = null;
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        XposedServiceHelper.registerListener(new XposedServiceHelper.OnServiceListener() {
+            @Override
+            public void onServiceBind(@NonNull XposedService service) {
+                mService = service;
+            }
+
+            @Override
+            public void onServiceDied(@NonNull XposedService service) {
+                mService = null;
+            }
+        });
+    }
+}
